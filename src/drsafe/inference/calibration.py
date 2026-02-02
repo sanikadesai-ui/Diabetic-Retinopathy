@@ -160,14 +160,14 @@ def calibrate_model(
     
     # Compute ECE before calibration
     if task == "binary":
-        probs_before = torch.sigmoid(all_logits).numpy()
-        ece_before, _, _, _ = expected_calibration_error(probs_before, all_labels.numpy())
+        probs_before = torch.sigmoid(all_logits).cpu().numpy()
+        ece_before, _, _, _, _ = expected_calibration_error(probs_before, all_labels.numpy())
     else:
-        probs_before = torch.softmax(all_logits, dim=1).numpy()
+        probs_before = torch.softmax(all_logits, dim=1).cpu().numpy()
         # For multiclass, use top-1 confidence
         top_probs = probs_before.max(axis=1)
         correct = (probs_before.argmax(axis=1) == all_labels.numpy()).astype(int)
-        ece_before, _, _, _ = expected_calibration_error(top_probs, correct)
+        ece_before, _, _, _, _ = expected_calibration_error(top_probs, correct)
     
     # Fit temperature scaling
     temp_scaler = TemperatureScaling()
@@ -178,13 +178,13 @@ def calibrate_model(
         scaled_logits = temp_scaler(all_logits)
         
         if task == "binary":
-            probs_after = torch.sigmoid(scaled_logits).numpy()
-            ece_after, _, _, _ = expected_calibration_error(probs_after, all_labels.numpy())
+            probs_after = torch.sigmoid(scaled_logits).cpu().numpy()
+            ece_after, _, _, _, _ = expected_calibration_error(probs_after, all_labels.numpy())
         else:
-            probs_after = torch.softmax(scaled_logits, dim=1).numpy()
+            probs_after = torch.softmax(scaled_logits, dim=1).cpu().numpy()
             top_probs = probs_after.max(axis=1)
             correct = (probs_after.argmax(axis=1) == all_labels.numpy()).astype(int)
-            ece_after, _, _, _ = expected_calibration_error(top_probs, correct)
+            ece_after, _, _, _, _ = expected_calibration_error(top_probs, correct)
     
     logger.info(f"ECE before calibration: {ece_before:.4f}")
     logger.info(f"ECE after calibration: {ece_after:.4f}")
@@ -206,17 +206,21 @@ def apply_temperature_scaling(
         task: "binary" or "multiclass".
     
     Returns:
-        Calibrated probabilities.
+        Calibrated probabilities as numpy array on CPU.
     """
     if isinstance(logits, np.ndarray):
-        logits = torch.from_numpy(logits)
+        logits = torch.from_numpy(logits).float()
+    
+    # Ensure we're on CPU for numpy conversion
+    if logits.is_cuda:
+        logits = logits.cpu()
     
     scaled_logits = logits / temperature
     
     if task == "binary":
-        probs = torch.sigmoid(scaled_logits).numpy()
+        probs = torch.sigmoid(scaled_logits).detach().numpy()
     else:
-        probs = torch.softmax(scaled_logits, dim=-1).numpy()
+        probs = torch.softmax(scaled_logits, dim=-1).detach().numpy()
     
     return probs
 
@@ -335,7 +339,7 @@ def reliability_diagram(
     """
     import matplotlib.pyplot as plt
     
-    ece, mce, bin_accuracies, bin_confidences = expected_calibration_error(
+    ece, mce, bin_accuracies, bin_confidences, bin_counts = expected_calibration_error(
         probs, labels, n_bins
     )
     
@@ -344,22 +348,42 @@ def reliability_diagram(
     # Plot perfect calibration line
     ax.plot([0, 1], [0, 1], "k--", label="Perfect calibration")
     
-    # Plot actual calibration
-    bin_centers = np.linspace(0.05, 0.95, n_bins)
+    # Use actual bin centers from the calibration computation
+    # Only plot bins that have samples (bin_counts > 0)
+    bin_width = 1.0 / n_bins
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    bin_centers = (bin_boundaries[:-1] + bin_boundaries[1:]) / 2
+    
+    # Mask out empty bins for plotting
+    valid_mask = bin_counts > 0
+    
     ax.bar(
-        bin_centers,
-        bin_accuracies,
-        width=0.08,
+        bin_centers[valid_mask],
+        bin_accuracies[valid_mask],
+        width=bin_width * 0.9,
         alpha=0.7,
+        edgecolor='black',
         label=f"Model (ECE={ece:.4f})",
     )
     
+    # Add sample counts as text annotations
+    for i, (center, acc, count) in enumerate(zip(bin_centers, bin_accuracies, bin_counts)):
+        if count > 0:
+            ax.annotate(
+                f'n={count}',
+                (center, acc + 0.02),
+                ha='center',
+                fontsize=8,
+                alpha=0.7,
+            )
+    
     ax.set_xlabel("Predicted Probability")
-    ax.set_ylabel("True Probability")
+    ax.set_ylabel("True Probability (Accuracy)")
     ax.set_title(title)
-    ax.legend()
+    ax.legend(loc='lower right')
     ax.set_xlim([0, 1])
     ax.set_ylim([0, 1])
+    ax.grid(alpha=0.3)
     
     plt.tight_layout()
     

@@ -3,9 +3,10 @@ Metrics for DR-SAFE pipeline.
 
 Provides comprehensive metrics for evaluating diabetic retinopathy classification:
 - Quadratic Weighted Kappa (QWK) for severity grading
-- ROC-AUC, PR-AUC for referable detection
-- Calibration metrics (ECE, MCE)
+- ROC-AUC, PR-AUC for referable detection (correctly computed from probabilities)
+- Calibration metrics (ECE, MCE, Brier Score)
 - Confusion matrix and per-class metrics
+- Operating point utilities (sensitivity @ specificity, threshold selection)
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ import numpy as np
 import torch
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
+    brier_score_loss,
     classification_report,
     confusion_matrix,
     f1_score,
@@ -94,7 +97,7 @@ def expected_calibration_error(
     probs: Union[np.ndarray, torch.Tensor],
     targets: Union[np.ndarray, torch.Tensor],
     n_bins: int = 10,
-) -> Tuple[float, float, np.ndarray, np.ndarray]:
+) -> Tuple[float, float, np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute Expected Calibration Error (ECE) and Maximum Calibration Error (MCE).
     
@@ -106,7 +109,7 @@ def expected_calibration_error(
         n_bins: Number of bins for calibration.
     
     Returns:
-        Tuple of (ECE, MCE, bin_accuracies, bin_confidences).
+        Tuple of (ECE, MCE, bin_accuracies, bin_confidences, bin_counts).
     """
     # Convert to numpy
     if isinstance(probs, torch.Tensor):
@@ -136,7 +139,7 @@ def expected_calibration_error(
             # Compute accuracy and confidence for this bin
             bin_acc = targets[in_bin].mean()
             bin_conf = probs[in_bin].mean()
-            bin_count = in_bin.sum()
+            bin_count = int(in_bin.sum())
             
             # Update ECE
             ece += np.abs(bin_acc - bin_conf) * bin_count
@@ -148,13 +151,14 @@ def expected_calibration_error(
             bin_confidences.append(bin_conf)
             bin_counts.append(bin_count)
         else:
-            bin_accuracies.append(0.0)
+            # Use NaN for empty bins to distinguish from bins with 0% accuracy
+            bin_accuracies.append(np.nan)
             bin_confidences.append((bin_lower + bin_upper) / 2)
             bin_counts.append(0)
     
     ece = ece / len(probs) if len(probs) > 0 else 0.0
     
-    return float(ece), float(mce), np.array(bin_accuracies), np.array(bin_confidences)
+    return float(ece), float(mce), np.array(bin_accuracies), np.array(bin_confidences), np.array(bin_counts)
 
 
 def fbeta_score(
@@ -196,11 +200,159 @@ def fbeta_score(
     return float(f_beta)
 
 
+def compute_brier_score(
+    probs: Union[np.ndarray, torch.Tensor],
+    targets: Union[np.ndarray, torch.Tensor],
+) -> float:
+    """
+    Compute Brier score for binary classification.
+    
+    Brier score is the mean squared error between predicted probabilities
+    and actual outcomes. Lower is better (0 = perfect, 0.25 = random).
+    
+    Args:
+        probs: Predicted probabilities for positive class.
+        targets: Binary targets (0 or 1).
+    
+    Returns:
+        Brier score in [0, 1].
+    """
+    if isinstance(probs, torch.Tensor):
+        probs = probs.cpu().numpy()
+    if isinstance(targets, torch.Tensor):
+        targets = targets.cpu().numpy()
+    
+    probs = np.asarray(probs).flatten()
+    targets = np.asarray(targets).flatten()
+    
+    return float(brier_score_loss(targets, probs))
+
+
+def sensitivity_at_specificity(
+    y_true: np.ndarray,
+    y_probs: np.ndarray,
+    target_specificity: float = 0.90,
+) -> Tuple[float, float]:
+    """
+    Compute sensitivity at a target specificity level.
+    
+    Useful for clinical settings where you need to guarantee a minimum
+    specificity (e.g., 90%) and want to know the resulting sensitivity.
+    
+    Args:
+        y_true: True binary labels.
+        y_probs: Predicted probabilities.
+        target_specificity: Target specificity level (default 0.90).
+    
+    Returns:
+        Tuple of (sensitivity, threshold) at the target specificity.
+    """
+    y_true = np.asarray(y_true).flatten()
+    y_probs = np.asarray(y_probs).flatten()
+    
+    fpr, tpr, thresholds = roc_curve(y_true, y_probs)
+    specificities = 1 - fpr
+    
+    # Find the threshold that achieves target specificity
+    # We want the highest sensitivity (tpr) where specificity >= target
+    valid_idx = specificities >= target_specificity
+    
+    if not valid_idx.any():
+        # Cannot achieve target specificity
+        return 0.0, 1.0
+    
+    # Among valid points, find the one with highest sensitivity
+    best_idx = np.where(valid_idx)[0][np.argmax(tpr[valid_idx])]
+    
+    return float(tpr[best_idx]), float(thresholds[best_idx])
+
+
+def specificity_at_sensitivity(
+    y_true: np.ndarray,
+    y_probs: np.ndarray,
+    target_sensitivity: float = 0.90,
+) -> Tuple[float, float]:
+    """
+    Compute specificity at a target sensitivity level.
+    
+    Useful for clinical settings where you need to guarantee a minimum
+    sensitivity (e.g., 90%) and want to know the resulting specificity.
+    
+    Args:
+        y_true: True binary labels.
+        y_probs: Predicted probabilities.
+        target_sensitivity: Target sensitivity level (default 0.90).
+    
+    Returns:
+        Tuple of (specificity, threshold) at the target sensitivity.
+    """
+    y_true = np.asarray(y_true).flatten()
+    y_probs = np.asarray(y_probs).flatten()
+    
+    fpr, tpr, thresholds = roc_curve(y_true, y_probs)
+    specificities = 1 - fpr
+    
+    # Find the threshold that achieves target sensitivity
+    valid_idx = tpr >= target_sensitivity
+    
+    if not valid_idx.any():
+        # Cannot achieve target sensitivity
+        return 0.0, 0.0
+    
+    # Among valid points, find the one with highest specificity
+    best_idx = np.where(valid_idx)[0][np.argmax(specificities[valid_idx])]
+    
+    return float(specificities[best_idx]), float(thresholds[best_idx])
+
+
+def find_threshold_for_sensitivity(
+    probs: np.ndarray,
+    targets: np.ndarray,
+    target_sensitivity: float = 0.90,
+) -> float:
+    """
+    Find threshold that achieves at least target sensitivity.
+    
+    Args:
+        probs: Predicted probabilities.
+        targets: Binary targets.
+        target_sensitivity: Minimum required sensitivity.
+    
+    Returns:
+        Threshold value.
+    """
+    _, threshold = specificity_at_sensitivity(targets, probs, target_sensitivity)
+    return threshold
+
+
+def find_threshold_for_specificity(
+    probs: np.ndarray,
+    targets: np.ndarray,
+    target_specificity: float = 0.90,
+) -> float:
+    """
+    Find threshold that achieves at least target specificity.
+    
+    Args:
+        probs: Predicted probabilities.
+        targets: Binary targets.
+        target_specificity: Minimum required specificity.
+    
+    Returns:
+        Threshold value.
+    """
+    _, threshold = sensitivity_at_specificity(targets, probs, target_specificity)
+    return threshold
+
+
 class DRMetrics:
     """
     Comprehensive metrics calculator for DR classification.
     
     Tracks predictions and computes metrics at the end of an epoch.
+    
+    IMPORTANT: ROC-AUC and PR-AUC are computed from probability scores,
+    NOT from hard predictions. This is critical for correct evaluation.
     """
     
     def __init__(self, num_classes: int = 5):
@@ -239,9 +391,9 @@ class DRMetrics:
             severity_preds: Predicted severity classes.
             severity_targets: True severity classes.
             severity_probs: Severity class probabilities.
-            referable_preds: Predicted referable status.
+            referable_preds: Predicted referable status (hard labels).
             referable_targets: True referable status.
-            referable_probs: Referable probabilities.
+            referable_probs: Referable probabilities (REQUIRED for AUC metrics).
         """
         # Convert to numpy
         def to_numpy(x):
@@ -272,6 +424,10 @@ class DRMetrics:
         
         Returns:
             Dictionary of metric names to values.
+            
+        Note:
+            ROC-AUC and PR-AUC are computed from referable_probs (probabilities),
+            NOT from referable_preds (hard labels). This is the correct approach.
         """
         metrics = {}
         
@@ -303,6 +459,12 @@ class DRMetrics:
             if self.referable_preds:
                 referable_preds = np.concatenate(self.referable_preds)
                 
+                # Confusion matrix elements
+                tn = ((referable_preds == 0) & (referable_targets == 0)).sum()
+                fp = ((referable_preds == 1) & (referable_targets == 0)).sum()
+                fn = ((referable_preds == 0) & (referable_targets == 1)).sum()
+                tp = ((referable_preds == 1) & (referable_targets == 1)).sum()
+                
                 metrics["referable_accuracy"] = float(
                     accuracy_score(referable_targets, referable_preds)
                 )
@@ -312,15 +474,21 @@ class DRMetrics:
                 metrics["referable_recall"] = float(
                     recall_score(referable_targets, referable_preds, zero_division=0)
                 )
+                # Sensitivity = Recall = TPR
+                metrics["referable_sensitivity"] = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+                # Specificity = TNR
+                metrics["referable_specificity"] = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+                
                 metrics["referable_f1"] = float(
                     f1_score(referable_targets, referable_preds, zero_division=0)
                 )
                 metrics["referable_f2"] = fbeta_score(referable_targets, referable_preds, beta=2.0)
             
+            # AUC metrics - MUST use probabilities, not hard predictions
             if self.referable_probs:
                 referable_probs = np.concatenate(self.referable_probs)
                 
-                # ROC-AUC
+                # ROC-AUC (using probabilities - CORRECT)
                 try:
                     metrics["referable_roc_auc"] = float(
                         roc_auc_score(referable_targets, referable_probs)
@@ -328,21 +496,45 @@ class DRMetrics:
                 except ValueError:
                     metrics["referable_roc_auc"] = 0.0
                 
-                # PR-AUC
+                # PR-AUC using average_precision_score (CORRECT implementation)
+                # NOTE: The old implementation used np.trapz(precision, recall) which
+                # can give wrong/negative values because sklearn's recall array from
+                # precision_recall_curve is not sorted in ascending order.
+                # average_precision_score computes the correct area under the PR curve.
                 try:
-                    precision, recall, _ = precision_recall_curve(
-                        referable_targets, referable_probs
+                    metrics["referable_pr_auc"] = float(
+                        average_precision_score(referable_targets, referable_probs)
                     )
-                    metrics["referable_pr_auc"] = float(np.trapz(precision, recall))
                 except ValueError:
                     metrics["referable_pr_auc"] = 0.0
                 
-                # Calibration
-                ece, mce, _, _ = expected_calibration_error(
+                # Brier score (calibration metric - lower is better)
+                metrics["referable_brier_score"] = float(
+                    brier_score_loss(referable_targets, referable_probs)
+                )
+                
+                # Calibration (ECE/MCE)
+                ece, mce, _, _, _ = expected_calibration_error(
                     referable_probs, referable_targets
                 )
                 metrics["referable_ece"] = ece
                 metrics["referable_mce"] = mce
+                
+                # Operating point metrics for clinical use
+                try:
+                    sens_at_90spec, thresh_90spec = sensitivity_at_specificity(
+                        referable_targets, referable_probs, 0.90
+                    )
+                    metrics["referable_sens_at_90spec"] = sens_at_90spec
+                    metrics["referable_thresh_90spec"] = thresh_90spec
+                    
+                    spec_at_90sens, thresh_90sens = specificity_at_sensitivity(
+                        referable_targets, referable_probs, 0.90
+                    )
+                    metrics["referable_spec_at_90sens"] = spec_at_90sens
+                    metrics["referable_thresh_90sens"] = thresh_90sens
+                except Exception:
+                    pass
         
         return metrics
     
@@ -398,6 +590,25 @@ class DRMetrics:
         referable_targets = np.concatenate(self.referable_targets)
         
         return precision_recall_curve(referable_targets, referable_probs)
+    
+    def get_optimal_thresholds(self) -> Dict[str, Tuple[float, float]]:
+        """
+        Get optimal thresholds for different metrics.
+        
+        Returns:
+            Dictionary mapping metric name to (threshold, score) tuples.
+        """
+        if not self.referable_probs or not self.referable_targets:
+            raise ValueError("No referable predictions stored")
+        
+        referable_probs = np.concatenate(self.referable_probs)
+        referable_targets = np.concatenate(self.referable_targets)
+        
+        return {
+            "f1": compute_optimal_threshold(referable_probs, referable_targets, "f1"),
+            "f2": compute_optimal_threshold(referable_probs, referable_targets, "f2"),
+            "youden": compute_optimal_threshold(referable_probs, referable_targets, "youden"),
+        }
 
 
 def compute_optimal_threshold(

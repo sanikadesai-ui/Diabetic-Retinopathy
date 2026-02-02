@@ -5,24 +5,27 @@ Validation script for DR-SAFE pipeline.
 Evaluate a trained model on validation or test data.
 
 Usage:
-    python scripts/validate.py --checkpoint outputs/checkpoints/best.pth --data-dir archive/resized_train_cropped
-    python scripts/validate.py --checkpoint outputs/checkpoints/best.pth --use-tta
+    python -m drsafe.scripts.validate --checkpoint outputs/checkpoints/best.pth --data-dir archive/resized_train_cropped
+    python -m drsafe.scripts.validate --checkpoint outputs/checkpoints/best.pth --use-tta
 """
 
 from __future__ import annotations
 
-import sys
+import json
 from pathlib import Path
+from typing import Optional
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
+import numpy as np
+import pandas as pd
+import torch
 import typer
 import yaml
-import json
-import torch
-import pandas as pd
-import numpy as np
-from typing import Optional
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+)
 from tqdm import tqdm
 
 app = typer.Typer(help="Validate DR-SAFE models")
@@ -90,19 +93,24 @@ def validate(
     Validate a trained model and compute metrics.
     
     Example:
-        python scripts/validate.py --checkpoint outputs/checkpoints/best.pth --use-tta
+        python -m drsafe.scripts.validate --checkpoint outputs/checkpoints/best.pth --use-tta
     """
-    from drsafe.utils.config import DataConfig, ModelConfig, AugmentationConfig
-    from drsafe.utils.seed import set_seed
-    from drsafe.utils.logging import setup_logger
-    from drsafe.utils.io import load_checkpoint
     from drsafe.data.dataset import DRDataset
     from drsafe.data.splits import PatientSplitter
     from drsafe.data.transforms import get_val_transforms
-    from drsafe.models.model import create_model, load_model_from_checkpoint
-    from drsafe.training.metrics import DRMetrics
     from drsafe.inference.tta import TTAPredictor
     from drsafe.inference.uncertainty import MCDropoutPredictor
+    from drsafe.models.model import load_model_from_checkpoint
+    from drsafe.training.metrics import (
+        DRMetrics,
+        expected_calibration_error,
+        quadratic_weighted_kappa,
+        sensitivity_at_specificity,
+        specificity_at_sensitivity,
+    )
+    from drsafe.utils.io import load_checkpoint
+    from drsafe.utils.logging import setup_logger
+    from drsafe.utils.seed import set_seed
     
     logger = setup_logger("drsafe")
     set_seed(42)
@@ -145,11 +153,15 @@ def validate(
     if fold is not None or data_cfg.get("fold") is not None:
         fold_num = fold if fold is not None else data_cfg.get("fold", 0)
         splitter = PatientSplitter(
-            labels_df=labels_df,
             n_folds=data_cfg.get("n_folds", 5),
-            seed=42,
+            stratify_by="severity",
+            random_state=42,
         )
-        _, val_df = splitter.get_fold(fold_num)
+        folds = splitter.split(labels_df)
+        train_idx, val_idx = folds[fold_num]
+        # Reset index to ensure proper indexing
+        labels_df = labels_df.reset_index(drop=True)
+        val_df = labels_df.iloc[val_idx].reset_index(drop=True)
     else:
         val_df = labels_df
     
