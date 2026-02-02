@@ -1,0 +1,107 @@
+# Hybrid model configuration for DR-SAFE pipeline
+# Combines CNN (ConvNeXt) with Vision Transformer for enhanced feature extraction
+
+# Data configuration
+data:
+  data_dir: "archive/resized_train_cropped/resized_train_cropped"
+  labels_file: "archive/trainLabels_cropped.csv"
+  image_size: 384  # Smaller for hybrid due to memory
+  num_workers: 4
+  train_batch_size: 8  # Smaller batch size for hybrid model
+  val_batch_size: 16
+  test_batch_size: 16
+  n_folds: 5
+  fold: 0
+  use_weighted_sampler: true
+  btgraham_preprocessing: true
+
+# Augmentation configuration
+augmentation:
+  use_mixup: true
+  use_cutmix: true
+  mixup_alpha: 0.2
+  cutmix_alpha: 1.0
+  mixup_prob: 0.5
+  horizontal_flip_prob: 0.5
+  vertical_flip_prob: 0.5
+  rotation_limit: 30
+  scale_limit: 0.2
+  shift_limit: 0.1
+  brightness_limit: 0.2
+  contrast_limit: 0.2
+  hue_shift_limit: 10
+  saturation_limit: 20
+  coarse_dropout_prob: 0.3
+  coarse_dropout_max_holes: 8
+  coarse_dropout_max_size: 32
+
+# Hybrid model configuration
+model:
+  backbone: "convnext_base"  # Primary backbone (not used when hybrid=true)
+  pretrained: true
+  num_classes: 5
+  drop_rate: 0.3
+  drop_path_rate: 0.2
+  global_pool: "avg"
+  # Hybrid model settings
+  use_hybrid: true
+  hybrid_cnn_backbone: "convnext_base"
+  hybrid_vit_backbone: "vit_base_patch16_384"
+  hybrid_fusion: "attention"  # Options: attention, gated, concat
+  # Ordinal regression for severity
+  use_ordinal: true
+  ordinal_method: "coral"  # Options: coral, corn
+
+# Loss configuration
+loss:
+  severity_loss: "ordinal"  # Use ordinal loss with ordinal head
+  referable_loss: "focal"
+  focal_gamma: 2.0
+  focal_alpha: null
+  label_smoothing: 0.1
+  severity_weight: 1.0
+  referable_weight: 0.5
+
+# Training configuration
+training:
+  epochs: 50
+  learning_rate: 0.00005  # Lower LR for larger model
+  weight_decay: 0.01
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  min_lr: 0.000001
+  gradient_clip_val: 1.0
+  gradient_accumulation_steps: 4  # Effective batch size = 8 * 4 = 32
+  mixed_precision: true
+  use_ema: true
+  ema_decay: 0.9999
+  early_stopping_patience: 10
+  early_stopping_metric: "val_qwk"
+  early_stopping_mode: "max"
+  save_top_k: 3
+
+# Inference configuration
+inference:
+  use_tta: true
+  tta_transforms:
+    - "hflip"
+    - "vflip"
+    - "rotate90"
+  mc_dropout_samples: 5
+  temperature: 1.0
+
+# Logging configuration
+logging:
+  project_name: "dr-safe"
+  experiment_name: "hybrid-model"
+  use_wandb: true
+  use_tensorboard: true
+  log_dir: "outputs/logs"
+  checkpoint_dir: "outputs/checkpoints"
+  log_interval: 50
+  save_predictions: true
+
+# Device configuration
+device: "cuda"
+seed: 42

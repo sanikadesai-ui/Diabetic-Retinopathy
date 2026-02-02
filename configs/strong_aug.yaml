@@ -1,0 +1,108 @@
+# Strong augmentation configuration for DR-SAFE pipeline
+# Use this when you have limited data or want to maximize regularization
+
+# Data configuration
+data:
+  data_dir: "archive/resized_train_cropped/resized_train_cropped"
+  labels_file: "archive/trainLabels_cropped.csv"
+  image_size: 512
+  num_workers: 4
+  train_batch_size: 16
+  val_batch_size: 32
+  test_batch_size: 32
+  n_folds: 5
+  fold: 0
+  use_weighted_sampler: true
+  btgraham_preprocessing: true
+
+# Strong augmentation configuration
+augmentation:
+  use_mixup: true
+  use_cutmix: true
+  mixup_alpha: 0.4
+  cutmix_alpha: 1.0
+  mixup_prob: 0.5
+  # Aggressive training augmentations
+  horizontal_flip_prob: 0.5
+  vertical_flip_prob: 0.5
+  rotation_limit: 45
+  scale_limit: 0.3
+  shift_limit: 0.15
+  brightness_limit: 0.3
+  contrast_limit: 0.3
+  hue_shift_limit: 15
+  saturation_limit: 30
+  coarse_dropout_prob: 0.5
+  coarse_dropout_max_holes: 12
+  coarse_dropout_max_size: 48
+
+# Model configuration
+model:
+  backbone: "efficientnetv2_rw_m"
+  pretrained: true
+  num_classes: 5
+  drop_rate: 0.4
+  drop_path_rate: 0.3
+  global_pool: "avg"
+  use_hybrid: false
+  hybrid_cnn_backbone: "convnext_base"
+  hybrid_vit_backbone: "vit_base_patch16_224"
+  hybrid_fusion: "attention"
+  use_ordinal: false
+  ordinal_method: "coral"
+
+# Loss configuration with stronger regularization
+loss:
+  severity_loss: "focal"
+  referable_loss: "bce"
+  focal_gamma: 2.0
+  focal_alpha: null
+  label_smoothing: 0.2
+  severity_weight: 1.0
+  referable_weight: 0.5
+
+# Training configuration
+training:
+  epochs: 100
+  learning_rate: 0.0001
+  weight_decay: 0.05
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 10
+  min_lr: 0.0000001
+  gradient_clip_val: 1.0
+  gradient_accumulation_steps: 1
+  mixed_precision: true
+  use_ema: true
+  ema_decay: 0.9999
+  early_stopping_patience: 15
+  early_stopping_metric: "val_qwk"
+  early_stopping_mode: "max"
+  save_top_k: 3
+
+# Inference configuration with TTA
+inference:
+  use_tta: true
+  tta_transforms:
+    - "hflip"
+    - "vflip"
+    - "rotate90"
+    - "rotate180"
+    - "rotate270"
+  mc_dropout_samples: 10
+  temperature: 1.0
+
+# Logging configuration
+logging:
+  project_name: "dr-safe"
+  experiment_name: "strong-aug"
+  use_wandb: true
+  use_tensorboard: true
+  log_dir: "outputs/logs"
+  checkpoint_dir: "outputs/checkpoints"
+  log_interval: 50
+  save_predictions: true
+
+# Device configuration
+device: "cuda"
+seed: 42

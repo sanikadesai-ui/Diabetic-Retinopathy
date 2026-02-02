@@ -1,0 +1,98 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drsafe"
+version = "1.0.0"
+description = "Production-quality Diabetic Retinopathy severity grading pipeline"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "DR-SAFE Team"}
+]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+keywords = ["diabetic-retinopathy", "medical-imaging", "deep-learning", "pytorch"]
+
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "timm>=0.9.0",
+    "albumentations>=1.3.0",
+    "opencv-python>=4.7.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "scikit-learn>=1.2.0",
+    "scipy>=1.10.0",
+    "pyyaml>=6.0",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "tqdm>=4.65.0",
+    "wandb>=0.15.0",
+    "tensorboard>=2.13.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "pillow>=9.5.0",
+    "onnx>=1.14.0",
+    "onnxruntime>=1.15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.3.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.3.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.3.0",
+    "pre-commit>=3.3.0",
+]
+
+[project.scripts]
+drsafe-train = "scripts.train:main"
+drsafe-validate = "scripts.validate:main"
+drsafe-predict = "scripts.predict:main"
+drsafe-calibrate = "scripts.calibrate:main"
+drsafe-export = "scripts.export:main"
+drsafe-explain = "scripts.explain:main"
+
+[project.urls]
+Homepage = "https://github.com/drsafe/diabetic-retinopathy"
+Documentation = "https://github.com/drsafe/diabetic-retinopathy#readme"
+Repository = "https://github.com/drsafe/diabetic-retinopathy"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39', 'py310', 'py311']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["drsafe"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
