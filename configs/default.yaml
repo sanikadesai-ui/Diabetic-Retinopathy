@@ -6,7 +6,7 @@ data:
   data_dir: "archive/resized_train_cropped/resized_train_cropped"
   labels_file: "archive/trainLabels_cropped.csv"
   image_size: 512
-  num_workers: 4
+  num_workers: 0  # Set to 0 for Windows compatibility
   train_batch_size: 16
   val_batch_size: 32
   test_batch_size: 32
@@ -23,18 +23,18 @@ augmentation:
   cutmix_alpha: 1.0
   mixup_prob: 0.5
   # Training augmentations
-  horizontal_flip_prob: 0.5
-  vertical_flip_prob: 0.5
-  rotation_limit: 30
-  scale_limit: 0.2
-  shift_limit: 0.1
+  horizontal_flip: true
+  vertical_flip: true
+  rotate_limit: 30
   brightness_limit: 0.2
   contrast_limit: 0.2
-  hue_shift_limit: 10
-  saturation_limit: 20
-  coarse_dropout_prob: 0.3
+  use_grid_distortion: false
+  use_elastic_transform: false
+  use_coarse_dropout: true
   coarse_dropout_max_holes: 8
-  coarse_dropout_max_size: 32
+  coarse_dropout_max_size: 0.1
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
 
 # Model configuration
 model:

@@ -20,7 +20,7 @@ import typer
 import yaml
 from typing import Optional
 
-app = typer.Typer(help="Train DR-SAFE models for diabetic retinopathy grading")
+app = typer.Typer(help="Train DR-SAFE models for diabetic retinopathy grading", invoke_without_command=True)
 
 
 def load_config(config_path: str) -> dict:
@@ -51,8 +51,10 @@ def update_config(config: dict, **kwargs) -> dict:
     return config
 
 
-@app.command()
+@app.command(name="train")
+@app.callback(invoke_without_command=True)
 def train(
+    ctx: typer.Context,
     config: str = typer.Option(
         "configs/default.yaml",
         "--config", "-c",
@@ -115,10 +117,14 @@ def train(
     Example:
         python scripts/train.py --config configs/default.yaml --fold 0
     """
+    # If a subcommand was invoked, skip the default train behavior
+    if ctx.invoked_subcommand is not None:
+        return
+    
     import torch
     
     from drsafe.utils.config import (
-        DataConfig, AugmentationConfig, ModelConfig, 
+        Config, DataConfig, AugmentationConfig, ModelConfig, 
         LossConfig, TrainingConfig, LoggingConfig
     )
     from drsafe.utils.seed import set_seed
@@ -177,11 +183,14 @@ def train(
     labels_df = pd.read_csv(data_cfg.labels_file)
     
     splitter = PatientSplitter(
-        labels_df=labels_df,
         n_folds=data_cfg.n_folds,
-        seed=seed_val,
+        stratify_by="severity",
+        random_state=seed_val,
     )
-    train_df, val_df = splitter.get_fold(data_cfg.fold)
+    folds = splitter.split(labels_df)
+    train_indices, val_indices = folds[fold]
+    train_df = labels_df.iloc[train_indices].reset_index(drop=True)
+    val_df = labels_df.iloc[val_indices].reset_index(drop=True)
     
     logger.info(f"Train samples: {len(train_df)}, Val samples: {len(val_df)}")
     
@@ -191,28 +200,65 @@ def train(
     
     # Create transforms
     train_transform = get_train_transforms(
+        config=aug_cfg,
         image_size=data_cfg.image_size,
-        augmentation_config=aug_cfg,
     )
-    val_transform = get_val_transforms(image_size=data_cfg.image_size)
+    val_transform = get_val_transforms(
+        config=aug_cfg,
+        image_size=data_cfg.image_size,
+    )
     
     # Create data loaders
-    train_loader, val_loader = get_dataloaders(
-        train_df=train_df,
-        val_df=val_df,
-        data_dir=data_cfg.data_dir,
-        train_transform=train_transform,
-        val_transform=val_transform,
-        train_batch_size=data_cfg.train_batch_size,
-        val_batch_size=data_cfg.val_batch_size,
+    from drsafe.data.dataset import DRDataset, create_weighted_sampler
+    from torch.utils.data import DataLoader
+    from drsafe.utils.seed import get_worker_seed_fn
+    
+    # Create datasets
+    train_dataset = DRDataset(
+        df=train_df,
+        image_dir=data_cfg.data_dir,
+        transform=train_transform,
+    )
+    val_dataset = DRDataset(
+        df=val_df,
+        image_dir=data_cfg.data_dir,
+        transform=val_transform,
+    )
+    
+    # Create sampler for class imbalance
+    sampler = None
+    if data_cfg.use_weighted_sampler:
+        sampler = create_weighted_sampler(
+            labels=train_df["level"].values,
+            num_classes=model_cfg.num_classes,
+        )
+    
+    # Create dataloaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=data_cfg.train_batch_size,
+        shuffle=(sampler is None),
+        sampler=sampler,
         num_workers=data_cfg.num_workers,
-        use_weighted_sampler=data_cfg.use_weighted_sampler,
+        pin_memory=data_cfg.pin_memory,
+        drop_last=True,
+        worker_init_fn=get_worker_seed_fn(seed_val),
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=data_cfg.val_batch_size,
+        shuffle=False,
+        num_workers=data_cfg.num_workers,
+        pin_memory=data_cfg.pin_memory,
+        drop_last=False,
+        worker_init_fn=get_worker_seed_fn(seed_val),
     )
     
     # Create model
     model = create_model(
         config=model_cfg,
-        pretrained=model_cfg.pretrained,
+        num_classes=model_cfg.num_classes,
     )
     
     # Create experiment tracker
@@ -228,18 +274,25 @@ def train(
     else:
         tracker = None
     
+    # Create unified Config object for Trainer
+    full_config = Config(
+        data=data_cfg,
+        augmentation=aug_cfg,
+        model=model_cfg,
+        loss=loss_cfg,
+        training=train_cfg,
+        logging=log_cfg,
+        seed=seed_val,
+        device=str(device),
+    )
+    
     # Create trainer
     trainer = Trainer(
         model=model,
+        config=full_config,
         train_loader=train_loader,
         val_loader=val_loader,
-        training_config=train_cfg,
-        loss_config=loss_cfg,
-        device=device,
-        class_weights=torch.tensor(class_weights, dtype=torch.float32),
-        experiment_tracker=tracker,
-        checkpoint_dir=log_cfg.checkpoint_dir,
-        experiment_name=log_cfg.experiment_name,
+        fold=fold,
     )
     
     # Resume from checkpoint if specified
